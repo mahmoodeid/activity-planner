@@ -6,3 +6,4 @@ python-dateutil
 streamlit-aggrid
 supabase
 httpx
+kaleido
