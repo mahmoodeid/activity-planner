@@ -35,14 +35,20 @@ def db_load_state(plan_id: str) -> dict | None:
     return out
 
 
-def db_upsert_state(plan_id: str, state: dict) -> None:
-    sb = get_supabase()
-    payload = {
-        "plan_id": plan_id,
-        "state": state,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    sb.table("planner_state").upsert(payload).execute()
+def db_upsert_state(plan_id: str, state: dict) -> bool:
+    """Upsert planner state. Returns True on success, False on any failure."""
+    try:
+        sb = get_supabase()
+        payload = {
+            "plan_id": plan_id,
+            "state": state,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        sb.table("planner_state").upsert(payload).execute()
+        return True
+    except Exception:
+        return False
+
 
 
 def db_insert_change(plan_id: str, editor: str | None, action: str, state_h: str, details: dict | None = None) -> None:
