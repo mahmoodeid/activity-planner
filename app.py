@@ -1,20 +1,17 @@
 # ============================================================
 # Activity Planner — MS Project / Notion feel (AgGrid)
 #
-# ✅ Tasks table:
-#   - Editable in edit mode (AgGrid)
-#   - Drag & drop row ordering INSIDE the table (handle on Task)
-#   - Pinned columns (Task + Start)
-#   - Notes single-line + tooltip + horizontal scroll
-#   - Compact progress bar renderer inside Progress column
-#   - Vertical gridlines only + heavier/sticky header feel
-#   - "Apply edits" workflow (NO DB save until Apply)
-#   - Row order is SAVED (Order) and reflected in chart after Apply
-#
-# ✅ Streams/colors:
-#   - Chart tab expander is COLLAPSED by default
-#   - Streams table is editable in edit mode (AgGrid color picker + rename)
-#   - "Apply stream edits" button (NO rerun/save on every click)
+# Key UX decisions (per your feedback):
+# - Editable grid in edit mode (no auto-save while typing)
+# - "Apply edits" to save tasks (incl. order) + update chart
+# - Row ordering via drag handle INSIDE the Task column
+# - Order is persisted (Order) and reflected in chart
+# - Columns order: Task, Stream, Start, End, Duration, Progress, Notes
+# - Start/End/Progress are NEVER too narrow (fixed min widths)
+# - Notes are single-line (no wrap), full text via tooltip + Full Notes expander
+# - Vertical gridlines only + heavier sticky header
+# - Horizontal scrollbar ALWAYS visible (sticky) and spans the whole table area
+# - Streams/colors editor exists but is collapsed by default in Chart tab
 # ============================================================
 
 from __future__ import annotations
@@ -27,8 +24,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
-
-from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 from supabase_store import db_load_state, db_upsert_state, state_hash
 from excel_io import make_template_excel_bytes, export_excel_bytes, load_from_excel_bytes
@@ -91,17 +87,17 @@ def stable_color_from_name(name: str) -> str:
     return SCK_PALETTE[h % len(SCK_PALETTE)]
 
 
-def stream_color_map(streams_df: pd.DataFrame) -> dict[str, str]:
-    if streams_df is None or streams_df.empty:
-        return {}
-    return {str(r["Stream"]): str(r["Color"]) for _, r in streams_df.iterrows()}
-
-
 def df_hash(df: pd.DataFrame) -> str:
     try:
         return hashlib.md5(pd.util.hash_pandas_object(df.fillna(""), index=True).values).hexdigest()
     except Exception:
         return hashlib.md5(df.to_csv(index=False).encode("utf-8")).hexdigest()
+
+
+def stream_color_map(streams_df: pd.DataFrame) -> dict[str, str]:
+    if streams_df is None or streams_df.empty:
+        return {}
+    return {str(r["Stream"]): str(r["Color"]) for _, r in streams_df.iterrows()}
 
 
 def ensure_ids(df: pd.DataFrame) -> pd.DataFrame:
@@ -120,6 +116,7 @@ def ensure_order(df: pd.DataFrame) -> pd.DataFrame:
     if "Order" not in out.columns:
         out["Order"] = list(range(1, len(out) + 1))
     out["Order"] = pd.to_numeric(out["Order"], errors="coerce").fillna(0).astype(int)
+    # if duplicates / invalid, rebuild
     if out["Order"].nunique(dropna=False) != len(out) or (out["Order"] <= 0).any():
         out["Order"] = list(range(1, len(out) + 1))
     return out
@@ -162,7 +159,7 @@ def normalize_streams(tasks_df: pd.DataFrame, streams_df: pd.DataFrame) -> pd.Da
 def normalize_tasks(tasks_df: pd.DataFrame, streams_df: pd.DataFrame) -> pd.DataFrame:
     """
     Stored state uses Start/End as YYYY-MM-DD strings (stable for Excel/JSON).
-    Also persists Order (row ordering).
+    Persists Order for row ordering.
     """
     df = tasks_df.copy()
 
@@ -203,13 +200,16 @@ def normalize_tasks(tasks_df: pd.DataFrame, streams_df: pd.DataFrame) -> pd.Data
     df["Duration_days"] = dur_days
 
     df["Progress_pct"] = (
-        pd.to_numeric(df.get("Progress_pct", 0), errors="coerce").fillna(0).clip(0, 100).astype(float)
+        pd.to_numeric(df.get("Progress_pct", 0), errors="coerce")
+        .fillna(0)
+        .clip(0, 100)
+        .astype(float)
     )
 
     df["Start"] = start_dt.dt.strftime("%Y-%m-%d")
     df["End"] = end_dt.dt.strftime("%Y-%m-%d")
 
-    cols = ["Order", "ID", "Stream", "Task", "Start", "End", "Duration_days", "Progress_pct", "Notes"]
+    cols = ["Order", "ID", "Task", "Stream", "Start", "End", "Duration_days", "Progress_pct", "Notes"]
     for c in cols:
         if c not in df.columns:
             df[c] = ""
@@ -222,49 +222,17 @@ def normalize_tasks(tasks_df: pd.DataFrame, streams_df: pd.DataFrame) -> pd.Data
 def seed_demo():
     tasks = pd.DataFrame(
         [
-            {
-                "Order": 1,
-                "Stream": "Project A",
-                "Task": "Kickoff & planning",
-                "Start": "2025-11-01",
-                "End": "2025-11-15",
-                "Progress_pct": 20,
-                "Notes": "Align scope, owners, deliverables.",
-            },
-            {
-                "Order": 2,
-                "Stream": "Project A",
-                "Task": "Prototype",
-                "Start": "2025-11-16",
-                "End": "2025-12-20",
-                "Progress_pct": 45,
-                "Notes": "Iterate quickly; validate data model + UX.",
-            },
-            {
-                "Order": 3,
-                "Stream": "Project B",
-                "Task": "Requirements",
-                "Start": "2025-11-10",
-                "End": "2025-12-05",
-                "Progress_pct": 10,
-                "Notes": "Constraints, interfaces, assumptions, risks.",
-            },
-            {
-                "Order": 4,
-                "Stream": "Project B",
-                "Task": "Milestone: Review",
-                "Start": "2026-01-15",
-                "End": "2026-01-15",
-                "Progress_pct": 0,
-                "Notes": "0-day milestone",
-            },
+            {"Order": 1, "Stream": "Project A", "Task": "Kickoff & planning", "Start": "2025-11-01", "End": "2025-11-15", "Progress_pct": 20, "Notes": "Align scope, owners, deliverables."},
+            {"Order": 2, "Stream": "Project A", "Task": "Prototype", "Start": "2025-11-16", "End": "2025-12-20", "Progress_pct": 45, "Notes": "Iterate quickly; validate data model + UX."},
+            {"Order": 3, "Stream": "Project B", "Task": "Requirements", "Start": "2025-11-10", "End": "2025-12-05", "Progress_pct": 10, "Notes": "Constraints, interfaces, assumptions, risks."},
+            {"Order": 4, "Stream": "Project B", "Task": "Milestone: Review", "Start": "2026-01-15", "End": "2026-01-15", "Progress_pct": 0, "Notes": "0-day milestone"},
         ]
     )
     streams = pd.DataFrame(columns=["Stream", "Color"])
     streams = normalize_streams(tasks, streams)
     tasks = normalize_tasks(tasks, streams)
     meta = {"last_editor": None, "last_edit_at": None}
-    history = []
+    history: list[dict[str, Any]] = []
     return tasks, streams, meta, history
 
 
@@ -385,7 +353,6 @@ with st.sidebar:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
-
     st.download_button(
         "⬇️ Export current plan (Excel)",
         data=export_excel_bytes(st.session_state.tasks, st.session_state.streams),
@@ -410,8 +377,14 @@ with st.sidebar:
                 save_to_db_if_changed("Loaded plan from Excel")
 
                 # reset drafts
-                for k in ["tasks_draft", "tasks_draft_source_hash", "tasks_draft_dirty",
-                          "streams_draft", "streams_draft_source_hash", "streams_draft_dirty"]:
+                for k in [
+                    "tasks_draft",
+                    "tasks_draft_source_hash",
+                    "tasks_draft_dirty",
+                    "streams_draft",
+                    "streams_draft_source_hash",
+                    "streams_draft_dirty",
+                ]:
                     st.session_state.pop(k, None)
 
                 st.success("Loaded Excel → saved to Supabase (if reachable).")
@@ -452,7 +425,7 @@ with c2:
 tab_table, tab_chart = st.tabs(["📋 Table", "📈 Chart"])
 
 # ============================================================
-# AgGrid JS renderers + editors
+# AgGrid JS renderers/editors
 # ============================================================
 progress_renderer = JsCode(
     """
@@ -516,7 +489,7 @@ class StreamPillRenderer {
     tx.style.whiteSpace = 'nowrap';
     tx.style.overflow = 'hidden';
     tx.style.textOverflow = 'ellipsis';
-    tx.style.fontWeight = '700';
+    tx.style.fontWeight = '800';
     tx.innerText = s;
 
     wrap.appendChild(sw);
@@ -528,13 +501,7 @@ class StreamPillRenderer {
 """
 )
 
-notes_cell_style = JsCode(
-    """
-function(params) {
-  return {'whiteSpace':'nowrap','overflow':'hidden','textOverflow':'ellipsis'};
-}
-"""
-)
+notes_cell_style = JsCode("""function(params){return {'whiteSpace':'nowrap','overflow':'hidden','textOverflow':'ellipsis'};}""")
 
 row_style = JsCode(
     """
@@ -542,6 +509,21 @@ function(params) {
   if (!params.data) return {};
   if (params.data._valid === false) return { 'backgroundColor': 'rgba(220, 38, 38, 0.08)' };
   return {};
+}
+"""
+)
+
+# Critical: after drag end, rewrite Order sequentially (forces real data change)
+on_row_drag_end = JsCode(
+    """
+function(e){
+  try{
+    let i = 1;
+    e.api.forEachNode(function(node){
+      node.setDataValue('Order', i);
+      i++;
+    });
+  }catch(err){}
 }
 """
 )
@@ -586,8 +568,8 @@ class ColorCellRenderer {
     sw.style.border = '1px solid rgba(0,0,0,0.25)';
     sw.style.backgroundColor = color;
     const tx = document.createElement('span');
-    tx.innerText = color.toUpperCase();
-    tx.style.fontWeight = '700';
+    tx.innerText = (color || '').toUpperCase();
+    tx.style.fontWeight = '800';
     this.eGui.appendChild(sw);
     this.eGui.appendChild(tx);
   }
@@ -602,10 +584,10 @@ class ColorCellRenderer {
 with tab_table:
     st.subheader("Tasks")
 
+    # CSS: MS-Project-ish grid + sticky full-width horizontal scrollbar
     st.markdown(
         """
 <style>
-/* MS-Project-ish grid styling */
 div.ag-theme-alpine {
   --ag-font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
   --ag-font-size: 13px;
@@ -616,15 +598,38 @@ div.ag-theme-alpine {
   --ag-header-foreground-color: rgba(15,23,42,0.92);
   --ag-header-background-color: rgba(15,23,42,0.02);
 }
+
 /* heavier header */
 div.ag-theme-alpine .ag-header-cell-label { font-weight: 900; }
+
 /* vertical gridlines only */
 div.ag-theme-alpine .ag-cell { border-right: 1px solid rgba(15,23,42,0.08); }
 div.ag-theme-alpine .ag-row { border-bottom: 1px solid rgba(15,23,42,0.06); }
-/* reduce padding slightly */
+
+/* slightly tighter cell padding */
 div.ag-theme-alpine .ag-cell { padding-left: 10px; padding-right: 10px; }
-/* make horizontal scrollbar visible */
-div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
+
+/* Make the horizontal scrollbar always visible AND span full grid width */
+div.ag-theme-alpine .ag-body-horizontal-scroll {
+  position: sticky !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  z-index: 10 !important;
+  background: white !important;
+  height: 14px !important;
+  border-top: 1px solid rgba(15,23,42,0.08);
+}
+
+div.ag-theme-alpine .ag-body-horizontal-scroll-viewport {
+  width: 100% !important;
+}
+
+/* Ensure the grid wrapper doesn't clip the sticky scrollbar */
+div.ag-theme-alpine .ag-root-wrapper { overflow: visible !important; }
+
+/* Give pinned section a subtle divider (still vertical-only feel) */
+div.ag-theme-alpine .ag-pinned-left-cols-container { border-right: 1px solid rgba(15,23,42,0.10); }
 </style>
 """,
         unsafe_allow_html=True,
@@ -635,87 +640,153 @@ div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
     tasks_all = tasks_all[tasks_all["Task"].astype(str).str.strip() != ""].copy()
     tasks_all = tasks_all.sort_values("Order", kind="stable").reset_index(drop=True)
 
-    # Draft init/refresh
-    source_hash = df_hash(tasks_all[["Order", "ID", "Stream", "Task", "Start", "End", "Progress_pct", "Notes"]].copy())
+    cols_cmp = ["Order", "ID", "Task", "Stream", "Start", "End", "Progress_pct", "Notes"]
+    source_hash = df_hash(tasks_all[cols_cmp].copy())
+
+    # Draft lifecycle
     if "tasks_draft" not in st.session_state:
         st.session_state.tasks_draft = tasks_all.copy()
         st.session_state.tasks_draft_source_hash = source_hash
         st.session_state.tasks_draft_dirty = False
     else:
-        # refresh draft only if source changed AND no pending dirty draft
         if st.session_state.get("tasks_draft_source_hash") != source_hash and not st.session_state.get("tasks_draft_dirty", False):
             st.session_state.tasks_draft = tasks_all.copy()
             st.session_state.tasks_draft_source_hash = source_hash
             st.session_state.tasks_draft_dirty = False
 
-    # Prepare grid dataframe (with stream color)
     draft = st.session_state.tasks_draft.copy()
-    cmap_now = stream_color_map(st.session_state.streams)
-    draft["_streamColor"] = draft["Stream"].astype(str).map(cmap_now).fillna("#5B2C83")
 
+    # Attach stream color for renderer (internal)
+    cmap_now = stream_color_map(st.session_state.streams)
+    draft["_streamColor"] = draft["Stream"].astype(str).map(cmap_now).fillna(SCK_PALETTE[0])
+
+    # GRID DF in your column order
     grid_df = draft[
-        ["Order", "ID", "Stream", "Task", "Start", "End", "Duration_days", "Progress_pct", "Notes", "_valid", "_validation_msg", "_streamColor"]
+        [
+            "Task",
+            "Stream",
+            "Start",
+            "End",
+            "Duration_days",
+            "Progress_pct",
+            "Notes",
+            # internal/hidden
+            "Order",
+            "ID",
+            "_valid",
+            "_validation_msg",
+            "_streamColor",
+        ]
     ].copy()
 
     gb = GridOptionsBuilder.from_dataframe(grid_df)
+
     gb.configure_grid_options(
         headerHeight=38,
         rowHeight=34,
         animateRows=True,
         rowDragManaged=is_editor,
         suppressMoveWhenRowDragging=False,
+        onRowDragEnd=on_row_drag_end,
         getRowStyle=row_style,
         tooltipShowDelay=200,
+        alwaysShowHorizontalScroll=True,
         suppressHorizontalScroll=False,
         ensureDomOrder=True,
         enableCellTextSelection=True,
+        stopEditingWhenCellsLoseFocus=True,
+        suppressScrollOnNewData=True,
     )
 
-    gb.configure_column("Order", hide=True)
-    gb.configure_column("ID", hide=True)
-    gb.configure_column("_valid", hide=True)
-    gb.configure_column("_validation_msg", hide=True)
-    gb.configure_column("_streamColor", hide=True)
+    # Hide internal columns
+    for hidden in ["Order", "ID", "_valid", "_validation_msg", "_streamColor"]:
+        gb.configure_column(hidden, hide=True)
 
-    # Pinned left
-    gb.configure_column("Task", headerName="Task", editable=is_editor, pinned="left", rowDrag=is_editor, flex=2, minWidth=280)
-    gb.configure_column("Start", headerName="Start", editable=is_editor, pinned="left", width=130)
+    # Column sizing: enforce min widths so Start/End/Progress are always readable
+    gb.configure_column(
+        "Task",
+        headerName="Task",
+        editable=is_editor,
+        pinned="left",
+        rowDrag=is_editor,
+        width=360,
+        minWidth=320,
+        suppressSizeToFit=True,
+    )
 
     gb.configure_column(
         "Stream",
-        headerName="Stream",
+        headerName="Stream / Project",
         editable=is_editor,
+        pinned="left",
+        width=240,
+        minWidth=220,
+        suppressSizeToFit=True,
         cellEditor="agSelectCellEditor" if is_editor else None,
         cellEditorParams={"values": streams_df["Stream"].tolist()},
         cellRenderer=stream_pill_renderer,
-        width=210,
-        minWidth=180,
     )
-    gb.configure_column("End", headerName="End", editable=is_editor, width=130, tooltipField="_validation_msg")
-    gb.configure_column("Duration_days", headerName="Duration", editable=False, width=110)
-    gb.configure_column("Progress_pct", headerName="Progress", editable=is_editor, width=170, cellRenderer=progress_renderer)
+
+    # NOTE: we keep Start pinned as you requested earlier.
+    gb.configure_column(
+        "Start",
+        headerName="Start",
+        editable=is_editor,
+        pinned="left",
+        width=170,
+        minWidth=160,
+        suppressSizeToFit=True,
+    )
+
+    gb.configure_column(
+        "End",
+        headerName="End",
+        editable=is_editor,
+        width=170,
+        minWidth=160,
+        suppressSizeToFit=True,
+        tooltipField="_validation_msg",
+    )
+
+    gb.configure_column(
+        "Duration_days",
+        headerName="Duration",
+        editable=False,
+        width=130,
+        minWidth=120,
+        suppressSizeToFit=True,
+    )
+
+    gb.configure_column(
+        "Progress_pct",
+        headerName="Progress",
+        editable=is_editor,
+        width=260,
+        minWidth=240,
+        suppressSizeToFit=True,
+        cellRenderer=progress_renderer,
+    )
+
+    # Notes: single-line, takes remaining width, tooltip shows full
     gb.configure_column(
         "Notes",
         headerName="Notes",
         editable=is_editor,
-        flex=3,
-        minWidth=520,
+        flex=4,
+        minWidth=700,
         tooltipField="Notes",
         cellStyle=notes_cell_style,
     )
 
     grid_options = gb.build()
 
-    # IMPORTANT:
-    # - Use update_on for cell edits and drag reorder
-    # - Also set update_mode=MODEL_CHANGED as a robust fallback (older st_aggrid versions)
-    update_on = ["cellValueChanged", "rowDragEnd", "rowValueChanged"] if is_editor else []
+    # IMPORTANT: Prevent rerun on mere cell focus; update only after edit/drag finishes
+    update_on = ["cellEditingStopped", "rowDragEnd", "rowDragStopped", "rowValueChanged"] if is_editor else []
 
     grid = AgGrid(
-        grid_df,
+        data=grid_df,
         gridOptions=grid_options,
         update_on=update_on,
-        update_mode=GridUpdateMode.MODEL_CHANGED if is_editor else GridUpdateMode.NO_UPDATE,
         allow_unsafe_jscode=True,
         theme="alpine",
         height=760,
@@ -723,26 +794,24 @@ div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
         key="tasks_aggrid",
     )
 
-    # Compute dirty after grid returns (captures reorder + edits)
+    # Track dirty + keep draft synced (captures reorder AND edits)
     if is_editor and grid and grid.get("data") is not None:
         new_draft = pd.DataFrame(grid["data"]).copy()
 
-        # Re-apply order based on returned row sequence (THIS is the saved ordering)
+        # enforce sequential Order by current display order (also set by JS on drag end)
         new_draft["Order"] = list(range(1, len(new_draft) + 1))
 
-        # Drop UI-only cols and normalize
+        # drop internal
         new_draft = new_draft.drop(columns=["_streamColor"], errors="ignore")
-        new_draft = normalize_tasks(new_draft, st.session_state.streams)
 
+        new_draft = normalize_tasks(new_draft, st.session_state.streams)
         st.session_state.tasks_draft = new_draft
 
-        cols_cmp = ["Order", "ID", "Stream", "Task", "Start", "End", "Progress_pct", "Notes"]
         st.session_state.tasks_draft_dirty = (df_hash(tasks_all[cols_cmp]) != df_hash(new_draft[cols_cmp]))
 
-    # Controls (AFTER dirty is known)
+    # Controls
     if is_editor:
         cA, cB, cC, cD = st.columns([1.1, 1.1, 1.2, 3.6])
-
         with cA:
             add_clicked = st.button("➕ Add task", width="stretch")
         with cB:
@@ -804,9 +873,7 @@ div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
             append_history(editor_name, "Applied task edits (incl. ordering)")
             save_to_db_if_changed("Applied task edits (incl. ordering)")
 
-            st.session_state.tasks_draft_source_hash = df_hash(
-                st.session_state.tasks[["Order", "ID", "Stream", "Task", "Start", "End", "Progress_pct", "Notes"]]
-            )
+            st.session_state.tasks_draft_source_hash = df_hash(st.session_state.tasks[cols_cmp])
             st.session_state.tasks_draft_dirty = False
 
             st.success("Saved. Chart order updated.")
@@ -822,8 +889,8 @@ div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
                 "Select a task",
                 options=base_df["ID"].astype(str).tolist(),
                 format_func=lambda rid: (
-                    f"{base_df.loc[base_df['ID'].astype(str).eq(rid)].iloc[0]['Stream']} — "
-                    f"{base_df.loc[base_df['ID'].astype(str).eq(rid)].iloc[0]['Task']}"
+                    f"{base_df.loc[base_df['ID'].astype(str).eq(rid)].iloc[0]['Task']}  "
+                    f"({base_df.loc[base_df['ID'].astype(str).eq(rid)].iloc[0]['Stream']})"
                 ),
             )
             row = base_df.loc[base_df["ID"].astype(str).eq(str(pick_id))].iloc[0]
@@ -839,12 +906,10 @@ div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
                     append_history(editor_name, "Edited notes")
                     save_to_db_if_changed("Edited notes")
 
-                    # keep draft in sync ONLY if draft is not dirty
+                    # if draft is clean, refresh it
                     if not st.session_state.get("tasks_draft_dirty", False):
                         st.session_state.tasks_draft = st.session_state.tasks.copy()
-                        st.session_state.tasks_draft_source_hash = df_hash(
-                            st.session_state.tasks[["Order", "ID", "Stream", "Task", "Start", "End", "Progress_pct", "Notes"]]
-                        )
+                        st.session_state.tasks_draft_source_hash = df_hash(st.session_state.tasks[cols_cmp])
 
                     st.success("Notes saved.")
                     st.rerun()
@@ -857,19 +922,15 @@ div.ag-theme-alpine .ag-body-horizontal-scroll { height: 14px !important; }
 with tab_chart:
     st.subheader("Gantt chart")
 
-    # Streams expander: collapsed by default (per your request)
+    # Streams expander: COLLAPSED by default (your requirement)
     with st.expander("Streams (rename + colors)", expanded=False):
         st.caption("Edit streams here, then click Apply. (No auto-save while typing.)")
 
-        # Build source streams state
-        streams_src = st.session_state.streams.copy().reset_index(drop=True)
-        streams_src = streams_src[["Stream", "Color"]].copy()
+        streams_src = st.session_state.streams.copy().reset_index(drop=True)[["Stream", "Color"]].copy()
         streams_src["Stream"] = streams_src["Stream"].astype(str).str.strip()
         streams_src["Color"] = streams_src["Color"].astype(str).str.strip()
-
         streams_src_hash = df_hash(streams_src)
 
-        # Draft init/refresh
         if "streams_draft" not in st.session_state:
             st.session_state.streams_draft = streams_src.copy()
             st.session_state.streams_draft_source_hash = streams_src_hash
@@ -880,32 +941,17 @@ with tab_chart:
                 st.session_state.streams_draft_source_hash = streams_src_hash
                 st.session_state.streams_draft_dirty = False
 
-        # Streams AgGrid
         sgrid_df = st.session_state.streams_draft.copy()
 
         sgb = GridOptionsBuilder.from_dataframe(sgrid_df)
-        sgb.configure_grid_options(
-            headerHeight=38,
-            rowHeight=34,
-            animateRows=True,
-            suppressHorizontalScroll=False,
-            ensureDomOrder=True,
-        )
-        sgb.configure_column("Stream", editable=is_editor, flex=2, minWidth=220)
-        sgb.configure_column(
-            "Color",
-            editable=is_editor,
-            cellEditor=color_editor,
-            cellRenderer=color_renderer,
-            width=220,
-            minWidth=200,
-        )
+        sgb.configure_grid_options(headerHeight=38, rowHeight=34, animateRows=True, ensureDomOrder=True)
+        sgb.configure_column("Stream", editable=is_editor, flex=2, minWidth=240)
+        sgb.configure_column("Color", editable=is_editor, cellEditor=JsCode(color_editor.js_code), cellRenderer=color_renderer, width=240, minWidth=220)
 
         sgrid = AgGrid(
-            sgrid_df,
+            data=sgrid_df,
             gridOptions=sgb.build(),
-            update_on=["cellValueChanged"] if is_editor else [],
-            update_mode=GridUpdateMode.MODEL_CHANGED if is_editor else GridUpdateMode.NO_UPDATE,
+            update_on=["cellEditingStopped"] if is_editor else [],
             allow_unsafe_jscode=True,
             theme="alpine",
             height=260,
@@ -919,9 +965,7 @@ with tab_chart:
             draft_streams_new["Color"] = draft_streams_new["Color"].astype(str).str.strip()
             draft_streams_new = draft_streams_new[draft_streams_new["Stream"].ne("")].reset_index(drop=True)
 
-            # Normalize (also ensures missing task streams get colors later when applied)
             draft_streams_new = normalize_streams(st.session_state.tasks, draft_streams_new)
-
             st.session_state.streams_draft = draft_streams_new
             st.session_state.streams_draft_dirty = (df_hash(streams_src) != df_hash(draft_streams_new[["Stream", "Color"]]))
 
@@ -949,9 +993,7 @@ with tab_chart:
                 st.rerun()
 
             if apply_s:
-                # Apply streams
                 st.session_state.streams = normalize_streams(st.session_state.tasks, st.session_state.streams_draft.copy())
-
                 st.session_state.meta["last_editor"] = editor_name or "unknown"
                 st.session_state.meta["last_edit_at"] = now_utc_iso()
                 append_history(editor_name, "Applied stream edits (rename/colors)")
